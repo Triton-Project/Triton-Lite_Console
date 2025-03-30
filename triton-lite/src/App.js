@@ -28,18 +28,36 @@ function App() {
   const outputRef = useRef(null);
   const disconnectingRef = useRef(false);
 
-  // Handle parameter input changes with validation
-  const handleParameterChange = (param, max) => (e) => {
-    const value = e.target.value;
-    // Allow empty string or valid numbers within range
-    if (value === "" || (parseInt(value, 10) >= 0 && parseInt(value, 10) <= max)) {
-      const newParameters = { ...parameters, [param]: value === "" ? "0" : value };
-      setParameters(newParameters);
-      
-      // Update the encoded data string immediately
-      updateEncodedData(newParameters);
-    }
-  };
+ // Handle parameter input changes with validation
+const handleParameterChange = (param, max) => (e) => {
+  let value = e.target.value;
+  
+  // Handle empty input
+  if (value === "") {
+    const newParameters = { ...parameters, [param]: "0" };
+    setParameters(newParameters);
+    updateEncodedData(newParameters);
+    return;
+  }
+  
+  // Remove leading zeros
+  if (value.length > 1 && value.startsWith('0')) {
+    value = value.replace(/^0+/, '');
+  }
+  
+  // Parse the value and cap it at the maximum if needed
+  let numValue = parseInt(value, 10);
+  if (numValue > max) {
+    numValue = max;
+  }
+  
+  // Only accept non-negative numbers
+  if (!isNaN(numValue) && numValue >= 0) {
+    const newParameters = { ...parameters, [param]: numValue.toString() };
+    setParameters(newParameters);
+    updateEncodedData(newParameters);
+  }
+};
 
   // Update the encoded data string based on current parameters
   const updateEncodedData = (params = parameters) => {
