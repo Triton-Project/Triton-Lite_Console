@@ -1,16 +1,16 @@
 {
   "files": {
     "main.css": "/Triton-Lite_Console/static/css/main.4def5363.css",
-    "main.js": "/Triton-Lite_Console/static/js/main.3eea78ba.js",
+    "main.js": "/Triton-Lite_Console/static/js/main.df658010.js",
     "static/js/453.6c21082a.chunk.js": "/Triton-Lite_Console/static/js/453.6c21082a.chunk.js",
     "static/media/AquaWiz_NewW.png": "/Triton-Lite_Console/static/media/AquaWiz_NewW.ddf1808127bd48bb34db.png",
     "index.html": "/Triton-Lite_Console/index.html",
     "main.4def5363.css.map": "/Triton-Lite_Console/static/css/main.4def5363.css.map",
-    "main.3eea78ba.js.map": "/Triton-Lite_Console/static/js/main.3eea78ba.js.map",
+    "main.df658010.js.map": "/Triton-Lite_Console/static/js/main.df658010.js.map",
     "453.6c21082a.chunk.js.map": "/Triton-Lite_Console/static/js/453.6c21082a.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.4def5363.css",
-    "static/js/main.3eea78ba.js"
+    "static/js/main.df658010.js"
   ]
 }
