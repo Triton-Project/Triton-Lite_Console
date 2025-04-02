@@ -139,6 +139,20 @@ const handleParameterChange = (param, max) => (e) => {
     }
   }, [output]);
 
+  // Add this new useEffect to update the encoded data every second
+useEffect(() => {
+  // Update encoded data immediately
+  updateEncodedData();
+  
+  // Set up interval to update encoded data every second
+  const intervalId = setInterval(() => {
+    updateEncodedData();
+  }, 1000);
+  
+  // Clean up interval on component unmount
+  return () => clearInterval(intervalId);
+}, [parameters]); // Only re-establish the interval when parameters change
+
   // Initial welcome message on component mount
   useEffect(() => {
     addToOutput("TRITON-LITE Control Interface ready");
