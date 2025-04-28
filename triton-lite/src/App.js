@@ -10,7 +10,9 @@ function App() {
     exhStart: '0',
     exhStop: '0',
     lcdMode: '0',
-    logMode: '0'
+    logMode: '0',
+    diveCount: '0',      // Added dive count parameter
+    pressureThreshold: '0' // Added pressure threshold parameter
   });
   
   // State to hold the current encoded data string
@@ -72,6 +74,8 @@ const handleParameterChange = (param, max) => (e) => {
       const exhStopVal = parseInt(params.exhStop, 10) || 0;
       const lcdModeVal = parseInt(params.lcdMode, 10) || 0;
       const logModeVal = parseInt(params.logMode, 10) || 0;
+      const diveCountVal = parseInt(params.diveCount, 10) || 0; // Parse dive count
+      const pressureThresholdVal = parseInt(params.pressureThreshold, 10) || 0; // Parse pressure threshold
       
       // Prepare data bytes
       const header = 0x24; // '$'
@@ -99,7 +103,9 @@ const handleParameterChange = (param, max) => (e) => {
         exhStartVal & 0xFF,         // Low byte
         (exhStopVal >> 8) & 0xFF,   // High byte
         exhStopVal & 0xFF,          // Low byte
-        ((lcdModeVal & 0x0F) << 4) | (logModeVal & 0x0F) // Combined byte
+        ((lcdModeVal & 0x0F) << 4) | (logModeVal & 0x0F), // Combined byte
+        diveCountVal & 0xFF,        // Dive count byte
+        pressureThresholdVal & 0xFF // Pressure threshold byte
       ];
       
       // Calculate checksum (sum of all data bytes)
@@ -427,7 +433,7 @@ useEffect(() => {
                     disabled={!isConnected}
                     placeholder="0-65535"
                   />
-                  <span className="input-unit">s</span>
+                  <span className="input-unit">ms</span>
                 </div>
               </div>
               
@@ -457,7 +463,7 @@ useEffect(() => {
                     disabled={!isConnected}
                     placeholder="0-65535"
                   />
-                  <span className="input-unit">s</span>
+                  <span className="input-unit">ms</span>
                 </div>
               </div>
             </div>
@@ -489,6 +495,40 @@ useEffect(() => {
                     onChange={handleParameterChange('logMode', 15)}
                     disabled={!isConnected}
                     placeholder="0-15"
+                  />
+                </div>
+              </div>
+            </div>
+            
+            <h2>Diving Parameters</h2>
+            
+            <div className="dive-controls">
+              <div className="form-group">
+                <label htmlFor="diveCount">浮沈回数 (Dive Count)</label>
+                <div className="input-wrapper">
+                  <input 
+                    id="diveCount"
+                    type="number" 
+                    value={parameters.diveCount} 
+                    onChange={handleParameterChange('diveCount', 1023)}
+                    disabled={!isConnected}
+                    placeholder="0-1023"
+                  />
+                  <span className="input-unit">回</span>
+                </div>
+                <small className="input-help">0で回数指定なし</small>
+              </div>
+              
+              <div className="form-group">
+                <label htmlFor="pressureThreshold">内部加圧閾値</label>
+                <div className="input-wrapper">
+                  <input 
+                    id="pressureThreshold"
+                    type="number" 
+                    value={parameters.pressureThreshold} 
+                    onChange={handleParameterChange('pressureThreshold', 1023)}
+                    disabled={!isConnected}
+                    placeholder="0-1023"
                   />
                 </div>
               </div>
