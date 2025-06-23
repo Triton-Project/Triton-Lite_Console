@@ -1,435 +1,545 @@
+// Triton-LiteRev2 本番用プログラム（大瀬崎試験）- 最適化版v2
+// 2025/06/15
+// 作者: Ryusei Kamiyama
+//============================================================
+// ライブラリ
+#include <EEPROM.h>
 #include <TimeLib.h>
+#include <SoftwareSerial.h>
 #include <Wire.h>
+#include <SD.h>
+#include <TinyGPS++.h>
+#include <DallasTemperature.h>
+#include <OneWire.h>
+#include <MS5837.h>
 #include <RTC_RX8025NB.h>
+#include <IRremote.hpp>
 #include <LiquidCrystal_I2C.h>
 
+//============================================================
+// リモコンのボタンアドレス定義
+#define IR_CMD_ENTER_SENSING_MODE 0x40
+#define IR_CMD_ENTER_IDLE_MODE    0x44
+
+// 設定構造体
+struct {
+  uint32_t  supplyStartDelayMs  = 30000;
+  uint32_t  supplyStopDelayMs   = 6000;
+  uint32_t  exhaustStartDelayMs = 30000;
+  uint32_t  exhaustStopDelayMs  = 3000;
+  uint8_t   lcdMode             = 0;
+  uint8_t   logMode             = 0;
+  uint16_t  diveCount           = 10;
+  uint16_t  inPressThresh       = 0;
+} cfg;
+
+//============================================================
+// EEPROM関連
+#define MAX_DATA_LENGTH 32
+// SDカード関連
+char dataFileName[13];
+// 水の密度設定
+#define FLUID_DENSITY 997
+
+//============================================================
+// ピン設定
+#define PIN_CS_SD         10
+#define PIN_ONEWIRE       4
+#define PIN_IN_PRESSURE   A3
+#define PIN_LED_GREEN     9
+#define PIN_LED_RED       8
+#define PIN_VALVE1_SUPPLY  7
+#define PIN_VALVE2_EXHAUST 6
+#define PIN_VALVE3_PRESS   5
+#define PIN_IR_REMOTE     14
+
+SoftwareSerial gpsSerial(3, 2);
+TinyGPSPlus gps;
+MS5837 DepthSensor;
 RTC_RX8025NB rtc;
-LiquidCrystal_I2C lcd(0x27, 16, 2);  // LCDのI2Cアドレス、16x2サイズ
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// 電磁弁制御用のピン定義
-constexpr uint8_t VALVE0_PIN = 7;  // 吸気バルブ制御ピン
-constexpr uint8_t VALVE1_PIN = 8;  // 排気バルブ制御ピン
+//============================================================
+// センサ変数
+float noramlTemp;
+float prsInternalRaw;
+float prsInternalMbar;
+float prsExternal;
+float prsExternalDepth;
+float prsExternalTmp;
 
-// イベント管理用の変数
-uint16_t sup_start = 0;
-uint16_t sup_stop = 0;
-uint16_t exh_start = 0;
-uint16_t exh_stop = 0;
-uint8_t lcd_mode = 0;
-uint8_t log_mode = 0;
+//============================================================
+// GPSデータ
+uint16_t gpsAltitude;
+uint8_t gpsSatellites;
+float gpsLat, gpsLng;
 
-// 状態管理用の変数
-enum EventState {
-  IDLE,
-  SUP_START,
-  SUP_STOP,
-  EXH_START,
-  EXH_STOP
-};
-EventState currentState = IDLE;
-unsigned long stateStartTime = 0;
-uint8_t isControling = 0;
-uint8_t V0 = 0;  // バルブ0の状態
-uint8_t V1 = 0;  // バルブ1の状態
-uint8_t buoyState = 0;  // 浮沈状態 (0:待機, 1:浮上中, 2:沈降中)
+//============================================================
+// RTC変数
+uint16_t rtcYear;
+uint8_t rtcMonth, rtcDay, rtcHour, rtcMinute, rtcSecond;
 
-// LCD更新間隔制御用
-unsigned long lastLCDUpdate = 0;
-constexpr unsigned long LCD_UPDATE_INTERVAL = 500;  // LCD更新間隔(ms)
+//============================================================
+// 制御状態変数
+unsigned long timeNowMs, timeLastControlMs;
+bool isValve1SupplyOpen, isValve2ExhaustOpen, isValve3PressOpen;
+bool isControllingValve;
+int8_t valveCtrlState = 0; // 1: EXHstart 2: EXHstop 3: SUPstart 0: SUPstop
+int8_t movementState; // 1: UP 2: DOWN 3: PRS
+unsigned int divedCount = 0;
+bool isSensingMode = false;
 
+//============================================================
+// 準備処理
+//============================================================
 void setup() {
-  // シリアル通信の初期化
   Serial.begin(9600);
-  while (!Serial) {
-    ;  // シリアルポートが接続されるまで待つ
-  }
-
   Wire.begin();
+  IrReceiver.begin(PIN_IR_REMOTE, true);
   
-  // 電磁弁制御ピンの初期化
-  pinMode(VALVE0_PIN, OUTPUT);
-  pinMode(VALVE1_PIN, OUTPUT);
-  digitalWrite(VALVE0_PIN, LOW);
-  digitalWrite(VALVE1_PIN, LOW);
-  
-  // LCDの初期化
+  // LCD初期化
+  Wire.beginTransmission(0x27);
+  if (Wire.endTransmission() != 0) {
+    lcd = LiquidCrystal_I2C(0x3F, 16, 2);
+  }
   lcd.init();
   lcd.backlight();
+
+  // 水圧センサ
+  while (!DepthSensor.init()) {
+    lcd.setCursor(0,0);
+    lcd.print(F("Depth FAILED!"));
+    delay(1000);
+  }
+  DepthSensor.setModel(MS5837::MS5837_30BA);
+  DepthSensor.setFluidDensity(FLUID_DENSITY);
+
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_LED_RED, OUTPUT);
+  pinMode(PIN_VALVE1_SUPPLY, OUTPUT);
+  pinMode(PIN_VALVE2_EXHAUST, OUTPUT);
+  pinMode(PIN_VALVE3_PRESS, OUTPUT);
+  pinMode(PIN_CS_SD, OUTPUT);
+
+  if (!SD.begin(PIN_CS_SD)) {
+    lcd.setCursor(0,0);
+    lcd.print(F("SD FAILED"));
+    return;
+  }
+
+  readEEPROM();
+  timeLastControlMs = millis();
+
   lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Triton-Lite");
-  lcd.setCursor(0, 1);
-  lcd.print("Waiting...");
-
-  delay(300);  // LCD表示の安定化待ち
-  
-  Serial.println("Triton-Lite initialized");
-  Serial.println("Waiting for control data...");
+  lcd.backlight();
+  lcd.print(F("Ready"));
+  lcd.setCursor(0,1);
+  lcd.print(F("log:"));
+  lcd.print(cfg.logMode);
+  lcd.print(F(" lcd:"));
+  lcd.print(cfg.lcdMode);
+  delay(2000);
 }
 
+//============================================================
+// メイン処理ループ
+//============================================================
 void loop() {
-  // シリアルデータの受信
+  timeNowMs = millis();
+  
+  // IR受信処理
+  if (IrReceiver.decode()) {
+    IrReceiver.resume();
+    if (IrReceiver.decodedIRData.address == 0) {
+      uint8_t cmd = IrReceiver.decodedIRData.command;
+      if (cmd == IR_CMD_ENTER_SENSING_MODE) {
+        isSensingMode = true;
+      } else if (cmd == IR_CMD_ENTER_IDLE_MODE) {
+        isSensingMode = false;
+        lcd.clear();
+        lcd.backlight();
+        lcd.print(F("WaitingMode"));
+        lcd.setCursor(0,1);
+        lcd.print(F("log:"));
+        lcd.print(cfg.logMode);
+        lcd.print(F(" lcd:"));
+        lcd.print(cfg.lcdMode);
+      }
+    }
+  }
+  
+  if (isSensingMode) {
+    digitalWrite(PIN_LED_GREEN, HIGH);
+    digitalWrite(PIN_LED_RED, LOW);
+
+    // センサデータ取得
+    DepthSensor.read();
+    prsExternal = DepthSensor.pressure();
+    prsExternalDepth = DepthSensor.depth();
+    prsExternalTmp = DepthSensor.temperature();
+
+    prsInternalRaw = analogRead(PIN_IN_PRESSURE);
+    float v = prsInternalRaw * 0.00488 - 0.25; // /1024*5を最適化
+    prsInternalMbar = v * 6.667; // /4.5*30を最適化
+    float prsDiff = (prsInternalMbar * 68.94 + 1013.25) - prsExternal;
+    // 加圧制御
+    if (prsDiff+cfg.inPressThresh < 0) {
+      digitalWrite(PIN_VALVE3_PRESS, HIGH);
+      isValve3PressOpen = true;
+      isControllingValve = true;
+      movementState = 3;
+      delay(100);
+    } else {
+      digitalWrite(PIN_VALVE3_PRESS, LOW);
+      isValve3PressOpen = false;
+    }
+    
+    getGPSData();
+    // getTemperatureData();
+    ctrlValve();
+    handleLcdDisp();
+    handleSDcard();
+  } else {
+    digitalWrite(PIN_LED_GREEN, LOW);
+    digitalWrite(PIN_LED_RED, HIGH);
+    handleEEPROMSerial();
+  }
+}
+
+//============================================================
+// EEPROM関連（簡略化）
+void handleEEPROMSerial() {
   if (Serial.available() > 0) {
-    String receivedData = Serial.readStringUntil('\n');
-    Serial.print("Received: ");
-    Serial.println(receivedData);
-
-    // デコード処理
-    decode_data(receivedData.c_str());
-    
-    // 最初のイベント(SUP_START)を開始
-    startEvent(SUP_START);
-    Serial.println("Starting control sequence");
-  }
-  
-  // メイン機能: 電磁弁制御処理
-  controlValves();
-  
-  // サブ機能: LCD表示の更新（一定間隔で実行して負荷軽減）
-  updateLCDDisplay();
-}
-
-/**
- * @brief 電磁弁制御関数 - メイン機能
- * 状態に応じて電磁弁を制御する
- */
-void controlValves() {
-  if (currentState == IDLE) {
-    return;  // アイドル状態なら何もしない
-  }
-  
-  unsigned long currentTime = millis();
-  unsigned long elapsedTime = currentTime - stateStartTime;
-  
-  // 経過時間に応じて状態遷移
-  switch (currentState) {
-    case SUP_START:
-      // 吸気開始状態
-      if (elapsedTime == 0 && !isControling) {
-        // 初回実行時のみ
-        digitalWrite(VALVE0_PIN, HIGH);
-        V0 = 1;
-        isControling = 1;
-        buoyState = 1;  // 浮上中
-        Serial.println("SUP_START: Valve0 ON - Floating");
-      }
-      
-      if (elapsedTime >= sup_start * 1000UL) {
-        // 次の状態に遷移
-        startEvent(SUP_STOP);
-      }
-      break;
-      
-    case SUP_STOP:
-      // 吸気停止状態
-      if (elapsedTime == 0 && isControling) {
-        // 初回実行時のみ
-        digitalWrite(VALVE0_PIN, LOW);
-        V0 = 0;
-        isControling = 1;
-        buoyState = 1;  // 浮上中
-        Serial.println("SUP_STOP: Valve0 OFF - Still floating");
-      }
-      
-      if (elapsedTime >= sup_stop * 1000UL) {
-        // 次の状態に遷移
-        startEvent(EXH_START);
-      }
-      break;
-      
-    case EXH_START:
-      // 排気開始状態
-      if (elapsedTime == 0 && isControling) {
-        // 初回実行時のみ
-        digitalWrite(VALVE1_PIN, HIGH);
-        V1 = 1;
-        isControling = 1;
-        buoyState = 2;  // 沈降中
-        Serial.println("EXH_START: Valve1 ON - Sinking");
-      }
-      
-      if (elapsedTime >= exh_start * 1000UL) {
-        // 次の状態に遷移
-        startEvent(EXH_STOP);
-      }
-      break;
-      
-    case EXH_STOP:
-      // 排気停止状態
-      if (elapsedTime == 0 && isControling) {
-        // 初回実行時のみ
-        digitalWrite(VALVE1_PIN, LOW);
-        V1 = 0;
-        isControling = 1;
-        buoyState = 2;  // 沈降中
-        Serial.println("EXH_STOP: Valve1 OFF - Still sinking");
-      }
-      
-      if (elapsedTime >= exh_stop * 1000UL) {
-        // サイクルを繰り返す
-        startEvent(SUP_START);
-      }
-      break;
-      
-    default:
-      break;
+    String data = Serial.readStringUntil('\n');
+    Serial.print("Recieved: ");
+    Serial.println(data);
+    writeEEPROM(data);
+    readEEPROM();
   }
 }
 
-/**
- * @brief イベント開始関数
- * 新しいイベントを開始し、タイマーをリセットする
- * @param newState 開始する新しい状態
- */
-void startEvent(EventState newState) {
-  currentState = newState;
-  stateStartTime = millis();
-  isControling = 0;  // 新しい状態の初回制御フラグをリセット
-  
-  // 現在の状態をシリアル出力
-  Serial.print("State changed to: ");
-  Serial.println(getStateName(currentState));
-  Serial.print("Timer started: ");
-  
-  // 状態に応じたタイマー値を出力
-  switch (currentState) {
-    case SUP_START:
-      Serial.print(sup_start);
-      break;
-    case SUP_STOP:
-      Serial.print(sup_stop);
-      break;
-    case EXH_START:
-      Serial.print(exh_start);
-      break;
-    case EXH_STOP:
-      Serial.print(exh_stop);
-      break;
-    default:
-      Serial.print(0);
-      break;
-  }
-  Serial.println(" seconds");
-}
+bool writeEEPROM(String &str) {
+  uint8_t len = str.length() / 2;
+  if (len > MAX_DATA_LENGTH || len < 3) return false;
 
-/**
- * @brief 状態名取得関数
- * 状態enumを人間が読める文字列に変換する
- * @param state 変換する状態
- * @return const char* 状態の文字列表現
- */
-const char* getStateName(EventState state) {
-  switch (state) {
-    case IDLE:      return "IDLE";
-    case SUP_START: return "SUP_START";
-    case SUP_STOP:  return "SUP_STOP";
-    case EXH_START: return "EXH_START";
-    case EXH_STOP:  return "EXH_STOP";
-    default:        return "UNKNOWN";
-  }
-}
-
-/**
- * @brief LCD表示更新関数 - サブ機能
- * 現在時刻とイベント状態をLCDに表示する（一定間隔で実行）
- */
-void updateLCDDisplay() {
-    unsigned long currentMillis = millis();
-    
-    // 一定間隔でのみLCD更新（頻繁な更新による負荷軽減）
-    if (currentMillis - lastLCDUpdate >= LCD_UPDATE_INTERVAL) {
-      lastLCDUpdate = currentMillis;
-      
-      // 現在時刻を取得
-      tmElements_t tm = rtc.read();
-      
-      // 1行目: 時刻と浮沈状態
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      char timeStr[17];
-      sprintf(timeStr, "%02d:%02d:%02d", tm.Hour, tm.Minute, tm.Second);
-      lcd.print(timeStr);
-      
-      // 浮沈状態を表示
-      lcd.print(" ");
-      lcd.print(getStateName(currentState));
-      
-      // 2行目: 次のイベント名と残り時間をhh:mm:ss形式で表示
-      lcd.setCursor(0, 1);
-      
-      // 現在のイベント名を表示
-      //lcd.print(getStateName(currentState));
-      lcd.print("T - ");
-      
-      // 残り時間（アイドル以外の場合）
-      if (currentState != IDLE) {
-        unsigned long elapsedTime = currentMillis - stateStartTime;
-        unsigned long durationMs = 0;
-        
-        // 現在の状態の持続時間を取得
-        switch (currentState) {
-          case SUP_START:
-            durationMs = sup_start * 1000UL;
-            break;
-          case SUP_STOP:
-            durationMs = sup_stop * 1000UL;
-            break;
-          case EXH_START:
-            durationMs = exh_start * 1000UL;
-            break;
-          case EXH_STOP:
-            durationMs = exh_stop * 1000UL;
-            break;
-          default:
-            durationMs = 0;
-            break;
-        }
-        
-        // 残り時間を計算して時:分:秒形式で表示
-        if (elapsedTime < durationMs) {
-          unsigned long remainingMs = durationMs - elapsedTime;
-          unsigned int remainingSec = remainingMs / 1000;
-          
-          // 時:分:秒に変換
-          unsigned int hours = remainingSec / 3600;
-          unsigned int minutes = (remainingSec % 3600) / 60;
-          unsigned int seconds = remainingSec % 60;
-          
-          char timeStr[9]; // "hh:mm:ss\0" の9バイト
-          sprintf(timeStr, "%02u:%02u:%02u", hours, minutes, seconds);
-          lcd.print(timeStr);
-        } else {
-          lcd.print("00:00:00");  // 残り時間がない場合
-        }
-      } else {
-        lcd.print("--:--:--");  // アイドル状態の場合
-      }
-    }
+  uint8_t buf[len];
+  for (uint8_t i = 0; i < len; i++) {
+    sscanf(str.c_str() + 2 * i, "%2hhx", &buf[i]);
   }
 
-/**
- * @brief チェックサム計算関数
- * @param data_bytes チェックサム計算対象のバイト配列
- * @param length バイト配列の長さ
- * @return uint8_t 計算されたチェックサム値
- */
-uint8_t calculate_checksum(uint8_t* data_bytes, size_t length) {
+  if (buf[0] != 0x24 || buf[len-1] != 0x3B) return false;
+
   uint8_t sum = 0;
-  for (size_t i = 0; i < length; i++) {
-    sum += data_bytes[i];
+  for (uint8_t i = 0; i <= len-3; i++) sum += buf[i];
+  if ((sum & 0xFF) != buf[len-2]) return false;
+
+  decodeData(buf);
+
+  EEPROM.write(0, 0xAA);
+  EEPROM.write(1, len);
+  for (uint8_t i = 0; i < len; i++) {
+    EEPROM.write(i + 2, buf[i]);
   }
-  return sum & 0xFF;
+  return true;
 }
 
-/**
- * @brief データデコード関数
- * 受信したHEX文字列をデコードして処理する
- * @param encoded_string デコード対象のHEX文字列
- */
-void decode_data(const char* encoded_string) {
-  size_t length = strlen(encoded_string) / 2;
-  uint8_t data_bytes[length];
+bool readEEPROM() {
+  uint8_t len = EEPROM.read(1);
+  if (EEPROM.read(2) != 0x24) return false;
 
-  // Convert hex string to bytes
-  for (size_t i = 0; i < length; i++) {
-    sscanf(encoded_string + 2 * i, "%2hhx", &data_bytes[i]);
+  uint8_t buf[len];
+  for (uint8_t i = 0; i < len; i++) {
+    buf[i] = EEPROM.read(i+2);
   }
 
-  // Extract the footer and checksum
-  uint8_t footer = data_bytes[length - 1];
-  uint8_t checksum = data_bytes[length - 2];
-  length -= 2;
+  if (buf[len-1] != 0x3B) return false;
 
-  // Extract data fields
-  uint8_t header = data_bytes[0];
-  if (header != 0x24) {
-    Serial.println("Invalid header");
-    return;
-  }
+  uint8_t sum = 0;
+  for (uint8_t i = 0; i <= len-3; i++) sum += buf[i];
+  if ((sum & 0xFF) != buf[len-2]) return false;
 
-  // Verify footer
-  if (footer != 0x3B) {
-    Serial.println("Invalid footer");
-    return;
-  }
+  decodeData(buf);
+  return true;
+}
 
-  // Verify checksum
-  uint8_t calculated_checksum = calculate_checksum(data_bytes, length);
-  if (calculated_checksum != checksum) {
-    Serial.println("Checksum does not match");
-    return;
-  }
+void decodeData(const uint8_t* d) {
+  uint16_t yr = 2000 + d[1];
+  uint8_t mo = d[2], dy = d[3], hr = d[4], mn = d[5], sc = d[6];
+  
+  rtc.setDateTime(yr, mo, dy, hr, mn, sc);
+  
+  cfg.supplyStartDelayMs = ((uint32_t)(d[7] << 8 | d[8])) * 1000;
+  cfg.supplyStopDelayMs = d[9] << 8 | d[10];
+  cfg.exhaustStartDelayMs = ((uint32_t)(d[11] << 8 | d[12])) * 1000;
+  cfg.exhaustStopDelayMs = d[13] << 8 | d[14];
+  cfg.lcdMode = (d[15] >> 4) & 0x0F;
+  cfg.logMode = d[15] & 0x0F;
+  cfg.diveCount = d[16];
+  cfg.inPressThresh = d[17];
 
-  uint8_t year_offset = data_bytes[1];
-  uint16_t year = 2000 + year_offset;
-  uint8_t month = data_bytes[2];
-  uint8_t day = data_bytes[3];
-  uint8_t hour = data_bytes[4];
-  uint8_t minute = data_bytes[5];
-  uint8_t second = data_bytes[6];
+  // 表示
+  Serial.print(yr);Serial.print('/');
+  Serial.print(mo);Serial.print('/');
+  Serial.print(dy);Serial.print(' ');
+  Serial.print(hr);Serial.print(':');
+  Serial.print(mn);Serial.print(':');
+  Serial.println(sc);
 
-  // グローバル変数に格納
-  sup_start = (data_bytes[7] << 8) | data_bytes[8];
-  sup_stop = (data_bytes[9] << 8) | data_bytes[10];
-  exh_start = (data_bytes[11] << 8) | data_bytes[12];
-  exh_stop = (data_bytes[13] << 8) | data_bytes[14];
+  Serial.print("Sup Start: "); Serial.println(cfg.supplyStartDelayMs);
+  Serial.print("Sup Stop : "); Serial.println(cfg.supplyStopDelayMs);
+  Serial.print("Exh Start: "); Serial.println(cfg.exhaustStartDelayMs);
+  Serial.print("Exh Stop : "); Serial.println(cfg.exhaustStopDelayMs);
+  Serial.print("LCD Mode : "); Serial.println(cfg.lcdMode);
+  Serial.print("Log Mode : "); Serial.println(cfg.logMode);
+  Serial.print("Dive Cnt : "); Serial.println(cfg.diveCount);
+  Serial.print("Thresh   : "); Serial.println(cfg.inPressThresh);
 
-  uint8_t mode_byte = data_bytes[15];
-  lcd_mode = (mode_byte >> 4) & 0x0F;
-  log_mode = mode_byte & 0x0F;
+  sprintf(dataFileName, "%02d%02d_%02d.csv", mo, dy, hr);
+}
 
-  // 通信遅延を補正（現在時刻 + 1秒を設定）
-  second += 1;
-  if (second >= 60) {
-    second = 0;
-    minute += 1;
-    if (minute >= 60) {
-      minute = 0;
-      hour += 1;
-      if (hour >= 24) {
-        hour = 0;
-        day += 1;
-        // 月と年の処理は省略（普通は不要）
+//============================================================
+// センシング関連
+void getTemperatureData() {
+  OneWire ow(PIN_ONEWIRE);
+  DallasTemperature s(&ow);
+  s.begin();
+  s.requestTemperatures();
+  noramlTemp = s.getTempCByIndex(0);
+}
+
+void getGPSData() {
+  gpsSerial.begin(9600);
+  
+  unsigned long st = millis();
+  while ((millis() - st) < 1000) {
+    while (gpsSerial.available()) {
+      if (gps.encode(gpsSerial.read())) {
+        if (gps.location.isUpdated()) {
+          gpsLat = gps.location.lat();
+          gpsLng = gps.location.lng();
+          gpsAltitude = gps.altitude.meters();
+          gpsSatellites = gps.satellites.value();
+        }
+        if (gps.time.isValid() && gps.date.isValid()) {
+          correctTime();
+          break;
+        }
       }
     }
   }
+  gpsSerial.end();
+}
 
-  // デコードした時刻にRTCを設定
-  rtc.setDateTime(year, month, day, hour, minute, second);
+void correctTime() {
+  if (!gps.time.isValid() || !gps.date.isValid()) return;
+  
+  int y = gps.date.year();
+  int m = gps.date.month();
+  int d = gps.date.day();
+  int h = gps.time.hour() + 9;
+  int mn = gps.time.minute();
+  int s = gps.time.second();
 
-  // デコードデータをシリアル出力
-  Serial.print("Year: ");
-  Serial.println(year);
-  Serial.print("Month: ");
-  Serial.println(month);
-  Serial.print("Day: ");
-  Serial.println(day);
-  Serial.print("Hour: ");
-  Serial.println(hour);
-  Serial.print("Minute: ");
-  Serial.println(minute);
-  Serial.print("Second: ");
-  Serial.println(second);
-  Serial.print("Sup Start: ");
-  Serial.println(sup_start);
-  Serial.print("Sup Stop: ");
-  Serial.println(sup_stop);
-  Serial.print("Exh Start: ");
-  Serial.println(exh_start);
-  Serial.print("Exh Stop: ");
-  Serial.println(exh_stop);
-  Serial.print("LCD Mode: ");
-  Serial.println(lcd_mode);
-  Serial.print("Log Mode: ");
-  Serial.println(log_mode);
-  Serial.println("Checksum valid: true");
+  if (h >= 24) { h -= 24; d++; }
+  
+  uint8_t dim[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  if (d > dim[m-1]) {
+    if (!(m == 2 && d == 29 && ((y%4==0 && y%100!=0) || y%400==0))) {
+      d = 1; m++;
+    }
+  }
+  if (m > 12) { m = 1; y++; }
 
-  // RTC時刻を読み取って表示
+  rtc.setDateTime(y, m, d, h, mn, s);
+  
   tmElements_t tm = rtc.read();
-  char timeStr[30];
-  sprintf(timeStr, "%d/%d/%d %d:%d:%d", 
-          tmYearToCalendar(tm.Year), tm.Month, tm.Day, 
-          tm.Hour, tm.Minute, tm.Second);
-  Serial.print("RTC Time set to: ");
-  Serial.println(timeStr);
+  rtcYear = tmYearToCalendar(tm.Year);
+  rtcMonth = tm.Month;
+  rtcDay = tm.Day;
+  rtcHour = tm.Hour;
+  rtcMinute = tm.Minute;
+  rtcSecond = tm.Second;
+}
+
+//============================================================
+// 制御関連
+void ctrlValve() {
+  if (cfg.diveCount <= divedCount && cfg.diveCount != 0) return;
+  
+  unsigned long dt = timeNowMs - timeLastControlMs;
+  
+  switch (valveCtrlState) {
+    case 0:
+      if (dt > cfg.exhaustStartDelayMs) {
+        digitalWrite(PIN_VALVE2_EXHAUST, HIGH);
+        isValve2ExhaustOpen = true;
+        isControllingValve = true;
+        valveCtrlState = 1;
+        movementState = 2;
+        timeLastControlMs = timeNowMs;
+      }
+      break;
+    case 1:
+      if (dt > cfg.exhaustStopDelayMs) {
+        digitalWrite(PIN_VALVE2_EXHAUST, LOW);
+        isValve2ExhaustOpen = false;
+        isControllingValve = true;
+        valveCtrlState = 2;
+        movementState = 2;
+        timeLastControlMs = timeNowMs;
+      }
+      break;
+    case 2:
+      if (dt > cfg.supplyStartDelayMs) {
+        digitalWrite(PIN_VALVE1_SUPPLY, HIGH);
+        isValve1SupplyOpen = true;
+        isControllingValve = true;
+        valveCtrlState = 3;
+        movementState = 1;
+        timeLastControlMs = timeNowMs;
+      }
+      break;
+    case 3:
+      if (dt > cfg.supplyStopDelayMs) {
+        digitalWrite(PIN_VALVE1_SUPPLY, LOW);
+        isValve1SupplyOpen = false;
+        isControllingValve = true;
+        valveCtrlState = 0;
+        movementState = 1;
+        divedCount++;
+        timeLastControlMs = timeNowMs;
+      }
+      break;
+  }
+}
+
+//============================================================
+// SDカード保存関連
+bool handleSDcard() {
+  char buf[256]; // 出力バッファ
+  char strLat[16], strLng[16], strPinRaw[10], strPinMbar[10], strPout[10];
+  char strDepth[10], strExtTmp[10], strTemp[10];
+
+  if (isControllingValve && cfg.logMode != 2 && cfg.logMode != 3) {
+    // movementState を文字列に変換
+    const char* moveStr = "UNDEF";
+    if (movementState == 1) moveStr = "UP";
+    else if (movementState == 2) moveStr = "DOWN";
+    else if (movementState == 3) moveStr = "PRESSURE";
+
+    sprintf(buf, "%lu,%04d/%02d/%02d-%02d:%02d:%02d,CTRL,MSG,%s,V1SUP,%d,V2EXH,%d,V3PRS,%d",
+            timeNowMs, rtcYear, rtcMonth, rtcDay, rtcHour, rtcMinute, rtcSecond,
+            moveStr, isValve1SupplyOpen, isValve2ExhaustOpen, isValve3PressOpen);
+
+    File f = SD.open(dataFileName, FILE_WRITE);
+    if (f) {
+      f.println(buf);
+      Serial.println(buf);
+      f.close();
+    }
+    isControllingValve = false;
+  }
+
+  // データログ部
+  if (cfg.logMode == 0 || cfg.logMode == 2) {
+    // float を文字列へ変換
+    dtostrf(gpsLat,         10, 6, strLat);
+    dtostrf(gpsLng,         10, 6, strLng);
+    dtostrf(prsInternalRaw, 8, 0, strPinRaw);
+    dtostrf(prsInternalMbar,5, 1, strPinMbar);
+    dtostrf(prsExternal,    5, 1, strPout);
+    dtostrf(prsExternalDepth,5,1, strDepth);
+    dtostrf(prsExternalTmp, 5, 1, strExtTmp);
+    dtostrf(noramlTemp,     5, 1, strTemp);
+
+    sprintf(buf, "%lu,%04d/%02d/%02d-%02d:%02d:%02d,DATA,LAT,%s,LNG,%s,SATNUM,%d,ALT,%d,PIN_RAW,%s,PIN_MBAR,%s,POUT,%s,POUT_DEPTH,%s,POUT_TMP,%s,TMP,%s,VCTRL_STATE,%d,MOV_STATE,%d,DIVE_COUNT,%d,",
+            timeNowMs, rtcYear, rtcMonth, rtcDay, rtcHour, rtcMinute, rtcSecond,
+            strLat, strLng, gpsSatellites, gpsAltitude,
+            strPinRaw, strPinMbar, strPout, strDepth, strExtTmp, strTemp,
+            valveCtrlState, movementState, divedCount);
+  }
+  else if (cfg.logMode == 1 || cfg.logMode == 3) {
+    dtostrf(prsInternalMbar, 5, 1, strPinMbar);
+    dtostrf(prsExternal,     5, 1, strPout);
+    dtostrf(prsExternalDepth,5, 1, strDepth);
+    dtostrf(prsExternalTmp,  5, 1, strExtTmp);
+    dtostrf(noramlTemp,      5, 1, strTemp);
+
+    sprintf(buf, "%lu,%04d/%02d/%02d-%02d:%02d:%02d,DATA,PIN_MBAR,%s,POUT,%s,POUT_DEPTH,%s,POUT_TMP,%s,TMP,%s,VCTRL_STATE,%d,MOV_STATE,%d,DIVE_COUNT,%d,",
+            timeNowMs, rtcYear, rtcMonth, rtcDay, rtcHour, rtcMinute, rtcSecond,
+            strPinMbar, strPout, strDepth, strExtTmp, strTemp,
+            valveCtrlState, movementState, divedCount);
+  } else {
+    lcd.clear();
+    lcd.print(F("logMode UNKNOWN!"));
+    return false;
+  }
+
+  File f = SD.open(dataFileName, FILE_WRITE);
+  if (f) {
+    f.println(buf);
+    Serial.println(buf);
+    f.close();
+    return true;
+  }
+  return false;
+}
+
+//============================================================
+// LCD表示関数
+void handleLcdDisp() {
+  if (isControllingValve && cfg.lcdMode == 1) {
+    lcd.clear();
+    lcd.print(F("V_CTRL:"));
+    lcd.print(movementState==1?F("UP"):movementState==2?F("DOWN"):movementState==3?F("PRESS"):F("UNDEF"));
+    lcd.setCursor(0,1);
+    lcd.print(F("V1:"));
+    lcd.print(isValve1SupplyOpen);
+    lcd.print(F(" V2:"));
+    lcd.print(isValve2ExhaustOpen);
+    lcd.print(F(" V3:"));
+    lcd.print(isValve3PressOpen);
+  }
+  
+  switch(cfg.lcdMode) {
+    case 0:
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print(rtcYear);
+      lcd.print('/');
+      lcd.print(rtcMonth);
+      lcd.print('/');
+      lcd.print(rtcDay);
+      lcd.print(' ');
+      lcd.print(rtcHour);
+      lcd.print(':');
+      lcd.print(rtcMinute);
+      lcd.setCursor(0,1);
+      lcd.print(rtcSecond);
+      lcd.print("sec ");
+      lcd.print("dived:");
+      lcd.print(divedCount);
+      break;
+    case 1:
+      break;
+    case 2:
+      lcd.clear();
+      lcd.print(F("TMP:"));
+      lcd.print(noramlTemp);
+      lcd.setCursor(0,1);
+      lcd.print(F("DepthTMP:"));
+      lcd.print(prsExternalTmp);
+      break;
+    case 3:
+      lcd.clear();
+      lcd.print(F("PrsExt:"));
+      lcd.print(prsExternal);
+      lcd.setCursor(0,1);
+      lcd.print(F("PrsInt:"));
+      lcd.print(prsInternalMbar * 68.94 + 1013.25);
+      break;
+    default:
+      lcd.noBacklight();
+      break;
+  }
 }

@@ -267,6 +267,33 @@ useEffect(() => {
         if (line) {
           addToOutput(`Received: ${line}`);
           
+          // Parse parameter values from Arduino
+          if (line.includes("Sup Start:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, supStart: value }));
+          } else if (line.includes("Sup Stop:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, supStop: value }));
+          } else if (line.includes("Exh Start:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, exhStart: value }));
+          } else if (line.includes("Exh Stop:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, exhStop: value }));
+          } else if (line.includes("LCD Mode:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, lcdMode: value }));
+          } else if (line.includes("Log Mode:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, logMode: value }));
+          } else if (line.includes("Dive Cnt:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, diveCount: value }));
+          } else if (line.includes("Thresh:")) {
+            const value = line.split(":")[1].trim();
+            setParameters(prev => ({ ...prev, pressureThreshold: value }));
+          }
+          
           // Check if we received confirmation of valid checksum
           if (line.includes("Checksum valid: true")) {
             addToOutput("Checksum valid. Closing connection in 3 seconds...");
