@@ -20,6 +20,9 @@ function App() {
 
   // State for expandable details
   const [showTimingDetails, setShowTimingDetails] = useState(false);
+  
+  // State for Easter egg
+  const [easterEggActive, setEasterEggActive] = useState(false);
 
   // Serial connection state
   const [isConnected, setIsConnected] = useState(false);
@@ -610,7 +613,12 @@ function App() {
           </div>
         </div>
       </div>
-      <footer className="app-footer">Made by Shintaro Matsumoto</footer>
+      <footer 
+        className={`app-footer ${easterEggActive ? 'easter-egg-active' : ''}`}
+        onClick={() => setEasterEggActive(!easterEggActive)}
+      >
+        Made by Shintaro Matsumoto
+      </footer>
     </div>
   );
 }

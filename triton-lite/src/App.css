@@ -458,3 +458,27 @@ h2::after {
     transform: translateY(0);
   }
 }
+
+/* Easter egg styles */
+.app-footer {
+  cursor: pointer;
+  transition: all 0.3s ease;
+  user-select: none;
+}
+
+.app-footer.easter-egg-active {
+  font-size: 48px;
+  font-weight: bold;
+  animation: rainbow 2s linear infinite;
+  transform: scale(1.2);
+}
+
+@keyframes rainbow {
+  0% { color: #ff0000; }
+  16.66% { color: #ff8800; }
+  33.33% { color: #ffff00; }
+  50% { color: #00ff00; }
+  66.66% { color: #0088ff; }
+  83.33% { color: #8800ff; }
+  100% { color: #ff0000; }
+}
