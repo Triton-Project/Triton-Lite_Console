@@ -10,7 +10,7 @@ function App() {
     exhStart: '0',
     exhStop: '0',
     lcdMode: '0',
-    logMode: '0',
+    logMode: '3',
     diveCount: '0',      // Added dive count parameter
     pressureThreshold: '0' // Added pressure threshold parameter
   });
@@ -492,9 +492,9 @@ useEffect(() => {
                     id="logMode"
                     type="number" 
                     value={parameters.logMode} 
-                    onChange={handleParameterChange('logMode', 15)}
+                    onChange={handleParameterChange('logMode', 3)}
                     disabled={!isConnected}
-                    placeholder="0-15"
+                    placeholder="0-3"
                   />
                 </div>
               </div>
@@ -504,7 +504,7 @@ useEffect(() => {
             
             <div className="dive-controls">
               <div className="form-group">
-                <label htmlFor="diveCount">浮沈回数 (Dive Count)</label>
+                <label htmlFor="diveCount">Dive Count</label>
                 <div className="input-wrapper">
                   <input 
                     id="diveCount"
@@ -514,13 +514,13 @@ useEffect(() => {
                     disabled={!isConnected}
                     placeholder="0-1023"
                   />
-                  <span className="input-unit">回</span>
+                  <span className="input-unit">times</span>
                 </div>
-                <small className="input-help">0で回数指定なし</small>
+                <small className="input-help">0 means no count specified</small>
               </div>
               
               <div className="form-group">
-                <label htmlFor="pressureThreshold">内部加圧閾値</label>
+                <label htmlFor="pressureThreshold">Internal Pressure Threshold</label>
                 <div className="input-wrapper">
                   <input 
                     id="pressureThreshold"
