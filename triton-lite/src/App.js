@@ -547,7 +547,7 @@ function App() {
             <div className="dive-controls">
               <div className="form-group">
                 <label htmlFor="diveCount">Dive Count</label>
-                <div className="input-wrapper">
+                <div className={`input-wrapper ${parameters.diveCount === '0' ? 'has-unlimited' : ''}`}>
                   <input
                     id="diveCount"
                     type="number"
@@ -556,6 +556,9 @@ function App() {
                     disabled={!isConnected}
                     placeholder="0-1023"
                   />
+                  {parameters.diveCount === '0' && (
+                    <span className="unlimited-text">unlimited</span>
+                  )}
                   <span className="input-unit">times</span>
                 </div>
                 <small className="input-help">0 means no count specified</small>

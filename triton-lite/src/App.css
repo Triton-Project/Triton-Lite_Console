@@ -482,3 +482,28 @@ h2::after {
   83.33% { color: #8800ff; }
   100% { color: #ff0000; }
 }
+
+/* Unlimited text styling */
+.unlimited-text {
+  position: absolute;
+  left: 40px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-secondary);
+  font-size: 14px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* Adjust input padding when unlimited text is shown */
+.input-wrapper.has-unlimited input {
+  padding-left: 110px;
+}
+
+/* Fix number input arrows position */
+.input-wrapper input[type="number"]::-webkit-inner-spin-button,
+.input-wrapper input[type="number"]::-webkit-outer-spin-button {
+  position: absolute;
+  right: 40px;
+  opacity: 1;
+}
