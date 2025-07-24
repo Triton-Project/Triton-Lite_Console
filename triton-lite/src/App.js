@@ -572,6 +572,9 @@ useEffect(() => {
           </div>
         </div>
       </div>
+      <footer className="app-footer">
+        Made by Shintaro Matsumoto
+      </footer>
     </div>
   );
 }
